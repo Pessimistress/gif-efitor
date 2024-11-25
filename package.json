@@ -1,0 +1,25 @@
+{
+  "name": "gif-editor",
+  "version": "1.0.0",
+  "description": "Client-only frame-by-frame GIF editor",
+  "scripts": {
+    "start": "vite --open",
+    "build": "vite build"
+  },
+  "author": "cxiaoji@gmail.com",
+  "license": "MIT",
+  "dependencies": {
+    "@types/react": "^18.0.0",
+    "@types/react-dom": "^18.0.0",
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0",
+    "react-dropzone": "^14.3.0"
+  },
+  "devDependencies": {
+    "vite": "^5.4.0"
+  },
+  "engines": {
+    "node": "20.x",
+    "yarn": "1.x"
+  }
+}

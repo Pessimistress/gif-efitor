@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "es2020",
+    "module": "es2020",
+    "lib": ["ES2020", "ES2022.Error", "DOM"],
+    "jsx": "react",
+    "strict": true,
+    "allowJs": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "esModuleInterop": true,
+    "moduleResolution": "node",
+    "noEmit": true
+  },
+  "include":[
+    "src/**/*",
+  ]
+}
