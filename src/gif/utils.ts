@@ -1,16 +1,13 @@
 import * as gif from "./omggif.js";
 
-export type GifReader = {
-  decodeAndBlitFrameRGBA: (
-    frameNum: number,
-    pixels: Uint8ClampedArray,
-    palette?: Uint8ClampedArray,
-  ) => void;
-  frameInfo: (frameNum: number) => GifFrameInfo;
+export type GifReader = gif.GifReader;
+export type GifWriter = gif.GifWriter;
+
+export type GifMetadata = {
   width: number;
   height: number;
-  numFrames: () => number;
-  loopCount: () => number;
+  frameCount: number;
+  loopCount: number;
 };
 
 export type GifFrameInfo = {
@@ -30,29 +27,25 @@ export type GifFrameInfo = {
 };
 export type GifFrameData = {
   index: number;
-  disposal: number;
   delay: number;
   data: ImageBitmap;
-  paletteGlobal?: Uint32Array;
-  paletteLocal?: Uint32Array;
+  isPaletteGlobal: boolean;
+  palette: Uint32Array;
 };
 
 // Reference: https://github.com/deanm/omggif/pull/31/files
-export async function loadFrames(
-  gifReader: GifReader,
-): Promise<GifFrameData[]> {
-  const canvas = document.createElement("canvas");
-  canvas.width = gifReader.width;
-  canvas.height = gifReader.height;
+export async function* loadFrames(
+  gifReader: gif.GifReader,
+): AsyncIterable<GifFrameData> {
+  const canvas = new OffscreenCanvas(gifReader.width, gifReader.height);
   const ctx = canvas.getContext("2d")!;
 
   let prevFrameInfo: GifFrameInfo | null = null;
+  let prevRestorePoint: GifFrameData | null = null;
   const scratchData = new ImageData(gifReader.width, gifReader.height);
 
-  const result: GifFrameData[] = [];
-
   for (let i = 0; i < gifReader.numFrames(); i++) {
-    const frameInfo = gifReader.frameInfo(i);
+    const frameInfo = gifReader.frameInfo(i) as GifFrameInfo;
 
     if (prevFrameInfo) {
       switch (prevFrameInfo.disposal) {
@@ -72,10 +65,10 @@ export async function loadFrames(
         case 3:
           // "Restore to previous" - revert back to most recent frame that was
           // not set to "Restore to previous", or frame 0
-          const restorePoints = result.filter((frame) => {
-            return frame.index === 0 || frame.disposal !== 3;
-          });
-          ctx.drawImage(restorePoints[restorePoints.length - 1].data, 0, 0);
+          if (!prevRestorePoint) {
+            throw new Error("No previous frame to restore");
+          }
+          ctx.drawImage(prevRestorePoint.data, 0, 0);
           break;
         default:
         // unknown
@@ -94,57 +87,65 @@ export async function loadFrames(
       frameInfo.height,
     );
 
-    const data = await createImageBitmap(canvas);
-
-    result[i] = {
-      ...frameInfo,
+    const frameData: GifFrameData = {
       index: i,
-      data,
+      // data:canvas.transferToImageBitmap(),
+      data: await createImageBitmap(canvas),
+      delay: frameInfo.delay,
+      palette: convertPalette(palette),
+      isPaletteGlobal: !frameInfo.has_local_palette,
     };
-    if (frameInfo.has_local_palette) {
-      result[i].paletteLocal = convertPalette(palette);
-    } else {
-      result[i].paletteGlobal = convertPalette(palette);
+
+    yield frameData;
+
+    if (prevRestorePoint == null || frameInfo.disposal !== 3) {
+      prevRestorePoint = frameData;
     }
     prevFrameInfo = frameInfo;
   }
-  return result;
 }
 
-export function saveFrames(frames: GifFrameData[]): Uint8Array {
-  const { width, height } = frames[0].data;
-  const buffer = new Uint8Array(width * height * frames.length + 1024);
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
+export function beginFile(
+  metadata: GifMetadata & {
+    palette?: Uint32Array;
+  },
+): {
+  addFrame: (frame: GifFrameData) => void;
+  done: () => boolean;
+  buffer: () => Uint8Array;
+} {
+  const { width, height, frameCount } = metadata;
+  let framesRemaining = frameCount;
+  const buffer = new Uint8Array((width * height + 1024) * frameCount);
+  const canvas = new OffscreenCanvas(width, height);
   const context = canvas.getContext("2d", {
     willReadFrequently: true,
   })!;
 
   const globalOptions: any = {
-    loop: 0,
+    loop: metadata.loopCount,
+    palette: metadata.palette,
   };
-  const globalPalette = frames.find((f) => f.paletteGlobal)?.paletteGlobal;
-  if (globalPalette) {
-    globalOptions.palette = globalPalette;
-  }
 
   const gf = new gif.GifWriter(buffer, width, height, globalOptions);
-  for (const frame of frames) {
+
+  const addFrame = (frame: GifFrameData) => {
     context.drawImage(frame.data, 0, 0);
     const imageData = context.getImageData(0, 0, width, height);
-    const pixels = encodeImage(
-      imageData,
-      frame.paletteGlobal || frame.paletteLocal!,
-    );
+    const pixels = encodeImage(imageData, frame.palette);
     const frameOptions = {
       delay: frame.delay,
-      palette: frame.paletteLocal,
+      palette: frame.isPaletteGlobal ? undefined : frame.palette,
     };
     gf.addFrame(0, 0, width, height, pixels, frameOptions);
-  }
+    framesRemaining--;
+  };
 
-  return buffer.slice(0, gf.end());
+  return {
+    addFrame,
+    done: () => framesRemaining === 0,
+    buffer: () => buffer.subarray(0, gf.end()),
+  };
 }
 
 function encodeImage(image: ImageData, palette: Uint32Array): Uint8Array {
@@ -174,16 +175,24 @@ function convertPalette(palette: Uint8ClampedArray): Uint32Array {
   return result;
 }
 
-export function readFile(file: File): Promise<GifReader> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const data = new Uint8Array(e.target?.result as ArrayBuffer);
-      resolve(new gif.GifReader(data));
-    };
-    reader.onerror = reject;
-    reader.readAsArrayBuffer(file);
-  });
+export async function readFile(
+  stream: ReadableStream<Uint8Array>,
+  byteLength: number,
+): Promise<gif.GifReader> {
+  const reader = stream.getReader();
+  const data = new Uint8Array(byteLength);
+  let pos = 0;
+  while (true) {
+    const chunk = await reader.read();
+    if (chunk.value) {
+      data.set(chunk.value, pos);
+      pos += chunk.value.length;
+    }
+    if (chunk.done) {
+      break;
+    }
+  }
+  return new gif.GifReader(data);
 }
 
 export function saveFile(data: Uint8Array, name: string) {

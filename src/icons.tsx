@@ -7,7 +7,7 @@ function makeIcon(path: string) {
       height={size}
       viewBox="0 -960 960 960"
       width={size}
-      fill="inherit"
+      fill="currentColor"
     >
       <path d={path} />
     </svg>

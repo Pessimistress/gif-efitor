@@ -24,9 +24,11 @@ button {
   border-radius: 2px;
   cursor: pointer;
 }
-button:focus,
-button:hover {
+button:focus {
   background: #eee;
+}
+button:hover {
+  color: #08f;
 }
 h1 {
   font-size: 18px;
@@ -68,17 +70,16 @@ h1 {
   width: 100%;
   overflow: hidden;
 }
-.editor .menu {
-  position: fixed;
-  top: 0;
-  right: 0;
-  margin: 20px;
+.editor > .menu {
+  width: 100%;
+  display: flex;
+  justify-content: end;
 }
 .popup {
   position: absolute;
   background: #fff;
   box-shadow: 0 0 1px 0px rgba(0, 0, 0, 0.5);
   padding: 20px;
-  top: 80px;
-  right: 10px;
+  top: 52px;
+  right: 12px;
 }

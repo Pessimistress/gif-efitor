@@ -1,12 +1,10 @@
 import * as React from "react";
 import { useMemo, useCallback, useRef, useEffect, useState } from "react";
 import {
-  GifReader,
+  readGifFromFile,
+  writeGifToFile,
+  GifMetadata,
   GifFrameData,
-  loadFrames,
-  readFile,
-  saveFrames,
-  saveFile,
 } from "./gif";
 import * as Icons from "./icons";
 
@@ -63,7 +61,7 @@ function getLayout(canvas: Dimension, image: Dimension) {
   const thumbnail: Region = {
     x: canvas.width / 2,
     y: timeline2.y + TextLineHeight,
-    width: thumbnailHeight / aspectRatio,
+    width: thumbnailHeight * aspectRatio,
     height: thumbnailHeight,
   };
 
@@ -152,8 +150,8 @@ function PlayControl({
 }
 
 export function FileEditor({ sourceFile }: FileEditorProps) {
-  const [image, setImage] = useState<GifReader>();
-  const [frames, setFrames] = useState<GifFrameData[]>();
+  const [image, setImage] = useState<GifMetadata>();
+  const [frames, setFrames] = useState<GifFrameData[]>([]);
   const [frameStates, setFrameStates] = useState<FrameState[]>([]);
   const [isPlaying, setIsPlaying] = useState(false);
   const [showInfo, setShowInfo] = useState<"none" | "help" | "info">("none");
@@ -165,22 +163,24 @@ export function FileEditor({ sourceFile }: FileEditorProps) {
   const [scrollPosition, setScrollPosition] = useState<number>(0);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
-  const frameCount = useMemo(() => image?.numFrames() ?? 0, [image]);
+  const frameCount = image?.frameCount ?? 0;
 
   useEffect(() => {
-    readFile(sourceFile)
-      .then((newImage) => {
+    setFrames([]);
+    readGifFromFile(sourceFile, (result) => {
+      if (result.type === "metadata") {
+        const metadata = result.value;
         setFrameStates(
           loadFileState(sourceFile) ??
-            Array.from({ length: newImage.numFrames() }, (_) => ({})),
+            Array.from({ length: metadata.frameCount }, (_) => ({})),
         );
         setSelectedFrame(0);
         setScrollPosition(0);
-        setImage(newImage);
-        return loadFrames(newImage);
-      })
-      .then(setFrames)
-      .catch(console.error);
+        setImage(metadata);
+      } else {
+        setFrames((curr) => curr.concat(result.value));
+      }
+    });
   }, [sourceFile]);
 
   useEffect(() => {
@@ -235,7 +235,7 @@ export function FileEditor({ sourceFile }: FileEditorProps) {
 
   // Redraw preview
   useEffect(() => {
-    if (frames && context && layout) {
+    if (context && layout && frames[selectedFrame]) {
       clearRegion(context, layout.preview);
       context.drawImage(
         frames[selectedFrame].data,
@@ -245,14 +245,14 @@ export function FileEditor({ sourceFile }: FileEditorProps) {
         layout.preview.height,
       );
     }
-  }, [context, frames?.[selectedFrame], layout]);
+  }, [context, frames[selectedFrame], layout]);
 
   // Redraw scrubber
   useEffect(() => {
-    if (frames && context && layout) {
+    if (context && layout) {
       clearRegion(context, layout.timeline1);
       const { y, width } = layout.timeline1;
-      const unitWidth = (width + 1) / frames.length;
+      const unitWidth = (width + 1) / frameCount;
 
       for (let i = 0; i < frameCount; i++) {
         const x = unitWidth * i;
@@ -268,16 +268,16 @@ export function FileEditor({ sourceFile }: FileEditorProps) {
       }
       context.fillStyle = "#000";
     }
-  }, [context, frames, layout, selectedFrame, frameStates]);
+  }, [context, layout, selectedFrame, frameStates]);
 
   // Redraw thumbnails
   useEffect(() => {
-    if (frames && context && layout) {
+    if (context && layout) {
       clearRegion(context, layout.timeline2);
       const { x, y, width, height } = layout.thumbnail;
       const x0 = x - scrollPosition;
 
-      for (let i = frameCount - 1, delay = 0; i >= 0; i--) {
+      for (let i = frames.length - 1, delay = 0; i >= 0; i--) {
         const frame = frames[i];
         const selected = selectedFrame === i;
         const deleted = frameStates[i].deleted;
@@ -287,7 +287,7 @@ export function FileEditor({ sourceFile }: FileEditorProps) {
           context.globalAlpha = deleted ? 0.3 : 1;
           context.drawImage(frame.data, fx, y, width, height);
           context.fillText(
-            deleted ? `${frame.index}` : `${frame.index} ${delay * 10}ms`,
+            deleted ? `${frame.index}` : `${frame.index} ${delay / 100}s`,
             fx,
             layout.timeline2.y,
           );
@@ -411,31 +411,21 @@ export function FileEditor({ sourceFile }: FileEditorProps) {
     [isPlaying, frameStates, selectedFrame],
   );
 
-  const summary = useMemo(() => {
-    if (!frames) return "";
-    let duration = 0;
-    let pickedFrameCount = 0;
-    for (let i = 0; i < frameCount; i++) {
-      duration += frames[i].delay;
-      if (!frameStates[i].deleted) pickedFrameCount++;
-    }
-    return `${pickedFrameCount}/${frameCount} frames ${duration / 100}s`;
-  }, [frames, frameStates]);
-
   const download = useCallback(() => {
-    if (frames) {
-      const framesToSave: GifFrameData[] = [];
-      for (let i = 0; i < frameCount; i++) {
-        const frame = frames[i];
-        if (frameStates[i].deleted) {
-          framesToSave[framesToSave.length - 1].delay += frame.delay;
-        } else {
-          framesToSave.push({ ...frame });
-        }
+    const framesToSave: GifFrameData[] = [];
+    for (let i = 0; i < frameCount; i++) {
+      const frame = frames[i];
+      if (frameStates[i].deleted) {
+        framesToSave[framesToSave.length - 1].delay += frame.delay;
+      } else {
+        framesToSave.push({ ...frame });
       }
-      const bytes = saveFrames(framesToSave);
-      saveFile(bytes, sourceFile.name);
     }
+    writeGifToFile(
+      { ...image!, frameCount: framesToSave.length },
+      framesToSave,
+      sourceFile.name,
+    );
   }, [frames, frameStates]);
 
   return (
@@ -449,7 +439,11 @@ export function FileEditor({ sourceFile }: FileEditorProps) {
         <button title="info" onClick={() => toggleInfo("info")}>
           <Icons.Info />
         </button>
-        <button title="download" onClick={download}>
+        <button
+          title="download"
+          onClick={download}
+          disabled={frames.length !== frameCount}
+        >
           <Icons.Download />
         </button>
         <button title="help" onClick={() => toggleInfo("help")}>
@@ -471,10 +465,10 @@ export function FileEditor({ sourceFile }: FileEditorProps) {
           <Help />
         </div>
       )}
-      {showInfo === "info" && frames && (
+      {showInfo === "info" && image && (
         <div className="popup">
           <Info
-            image={image!}
+            image={image}
             frame={frames[selectedFrame]}
             sourceFile={sourceFile}
             frameStates={frameStates}
@@ -493,7 +487,7 @@ function Info({
 }: {
   sourceFile: File;
   frame: GifFrameData;
-  image: GifReader;
+  image: GifMetadata;
   frameStates: FrameState[];
 }) {
   const pickedFrames = useMemo(() => {
@@ -519,7 +513,7 @@ function Info({
         </tr>
         <tr>
           <td>Frames</td>
-          <td>{image.numFrames()}</td>
+          <td>{image.frameCount}</td>
         </tr>
         <tr>
           <td>Picked frames</td>
@@ -527,11 +521,11 @@ function Info({
         </tr>
         <tr>
           <td>Loops</td>
-          <td>{image.loopCount() || "Forever"}</td>
+          <td>{image.loopCount || "Forever"}</td>
         </tr>
         <tr>
           <td>Colors</td>
-          <td>{(frame.paletteGlobal || frame.paletteLocal!).length}</td>
+          <td>{frame.palette.length}</td>
         </tr>
       </tbody>
     </table>
